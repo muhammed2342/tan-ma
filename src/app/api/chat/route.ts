@@ -42,7 +42,10 @@ function localReply(personName: string, lastUserText: string) {
 
 async function callOpenAI(personName: string, messages: ChatInputMessage[]) {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return null;
+    if (!apiKey) {
+        console.warn("OPENAI_API_KEY is not set; falling back to localReply");
+        return null;
+    }
 
     const system = `Sen ${personName} adında gerçek bir insansın. Türkçe, samimi ve doğal konuş. Kısa cevaplar ver (1-3 cümle). Karşı tarafın yazdığına göre devam et, soru sorarak sohbeti sürdür. Asla yapay zeka olduğunu söyleme.`;
 
@@ -63,7 +66,12 @@ async function callOpenAI(personName: string, messages: ChatInputMessage[]) {
         }),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+        console.warn("OpenAI chat.completions failed; falling back to localReply", {
+            status: res.status,
+        });
+        return null;
+    }
     const data = (await res.json().catch(() => null)) as
         | { choices?: Array<{ message?: { content?: string } }> }
         | null;
@@ -104,7 +112,8 @@ export async function POST(request: Request) {
         const aiText = await callOpenAI(personName, messages).catch(() => null);
         const reply = aiText ?? localReply(personName, lastUser);
 
-        return NextResponse.json({ reply }, { status: 200 });
+        const source = aiText ? "openai" : "fallback";
+        return NextResponse.json({ reply, source }, { status: 200 });
     } catch (err) {
         console.error(err);
         return NextResponse.json({ error: "Sunucu hatası" }, { status: 500 });
