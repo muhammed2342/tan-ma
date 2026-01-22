@@ -73,20 +73,7 @@ export async function PATCH(request: Request) {
             return NextResponse.json({ error: "Kullanıcı bulunamadı" }, { status: 404 });
         }
 
-        const profileVersionDelegate = (
-            prisma as unknown as {
-                userProfileVersion?: { create: (args: unknown) => Promise<unknown> };
-            }
-        ).userProfileVersion;
-
-        if (!profileVersionDelegate) {
-            return NextResponse.json(
-                { error: "Sunucu güncelleniyor. Lütfen tekrar deneyin." },
-                { status: 500 },
-            );
-        }
-
-        await profileVersionDelegate.create({
+        await prisma.userProfileVersion.create({
             data: {
                 userId: current.id,
                 phone: current.phone,

@@ -710,7 +710,6 @@ export default function Home() {
           replyText = data.reply;
         }
       } catch {
-        // ignore
       }
 
       const rid = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Date.now() + 1);
