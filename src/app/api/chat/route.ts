@@ -108,7 +108,7 @@ async function callGroq(personName: string, messages: ChatInputMessage[]): Promi
             authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-            model: "llama3-8b-8192",
+            model: "llama-3.1-8b-instant",
             temperature: 0.9,
             messages: [{ role: "system", content: system }, ...mapped],
         }),
