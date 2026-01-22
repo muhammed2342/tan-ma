@@ -6,6 +6,7 @@ import { verifyAuthToken } from "@/lib/auth";
 export const runtime = "nodejs";
 
 type ChatInputMessage = { role: "me" | "them"; text: string };
+type OpenAIResult = { text: string | null; status?: number; reason?: string };
 
 function localReply(personName: string, lastUserText: string) {
     const t = lastUserText.toLowerCase();
@@ -40,11 +41,11 @@ function localReply(personName: string, lastUserText: string) {
     return pick;
 }
 
-async function callOpenAI(personName: string, messages: ChatInputMessage[]) {
+async function callOpenAI(personName: string, messages: ChatInputMessage[]): Promise<OpenAIResult> {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
         console.warn("OPENAI_API_KEY is not set; falling back to localReply");
-        return null;
+        return { text: null, reason: "missing_api_key" } satisfies OpenAIResult;
     }
 
     const system = `Sen ${personName} adında gerçek bir insansın. Türkçe, samimi ve doğal konuş. Kısa cevaplar ver (1-3 cümle). Karşı tarafın yazdığına göre devam et, soru sorarak sohbeti sürdür. Asla yapay zeka olduğunu söyleme.`;
@@ -67,17 +68,70 @@ async function callOpenAI(personName: string, messages: ChatInputMessage[]) {
     });
 
     if (!res.ok) {
+        const errJson = (await res.json().catch(() => null)) as
+            | { error?: { message?: string; code?: string; type?: string } }
+            | null;
+        const reason =
+            errJson?.error?.message?.slice(0, 200) ??
+            errJson?.error?.code ??
+            errJson?.error?.type ??
+            "openai_request_failed";
         console.warn("OpenAI chat.completions failed; falling back to localReply", {
             status: res.status,
         });
-        return null;
+        return { text: null, status: res.status, reason } satisfies OpenAIResult;
     }
     const data = (await res.json().catch(() => null)) as
         | { choices?: Array<{ message?: { content?: string } }> }
         | null;
-    const text = data?.choices?.[0]?.message?.content?.trim();
-    if (!text) return null;
-    return text;
+    const text = data?.choices?.[0]?.message?.content?.trim() ?? null;
+    if (!text) return { text: null, status: 200, reason: "empty_openai_response" } satisfies OpenAIResult;
+    return { text } satisfies OpenAIResult;
+}
+
+async function callGroq(personName: string, messages: ChatInputMessage[]): Promise<OpenAIResult> {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+        return { text: null, reason: "missing_api_key" } satisfies OpenAIResult;
+    }
+
+    const system = `Sen ${personName} adında gerçek bir insansın. Türkçe, samimi ve doğal konuş. Kısa cevaplar ver (1-3 cümle). Karşı tarafın yazdığına göre devam et, soru sorarak sohbeti sürdür. Asla yapay zeka olduğunu söyleme.`;
+
+    const mapped = messages
+        .slice(-20)
+        .map((m) => ({ role: m.role === "me" ? "user" : "assistant", content: m.text }));
+
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+            model: "llama3-8b-8192",
+            temperature: 0.9,
+            messages: [{ role: "system", content: system }, ...mapped],
+        }),
+    });
+
+    if (!res.ok) {
+        const errJson = (await res.json().catch(() => null)) as
+            | { error?: { message?: string; code?: string; type?: string } }
+            | null;
+        const reason =
+            errJson?.error?.message?.slice(0, 200) ??
+            errJson?.error?.code ??
+            errJson?.error?.type ??
+            "groq_request_failed";
+        return { text: null, status: res.status, reason } satisfies OpenAIResult;
+    }
+
+    const data = (await res.json().catch(() => null)) as
+        | { choices?: Array<{ message?: { content?: string } }> }
+        | null;
+    const text = data?.choices?.[0]?.message?.content?.trim() ?? null;
+    if (!text) return { text: null, status: 200, reason: "empty_groq_response" } satisfies OpenAIResult;
+    return { text } satisfies OpenAIResult;
 }
 
 export async function POST(request: Request) {
@@ -109,11 +163,46 @@ export async function POST(request: Request) {
 
         const lastUser = [...messages].reverse().find((m) => m.role === "me")?.text ?? "";
 
-        const aiText = await callOpenAI(personName, messages).catch(() => null);
+        const groq: OpenAIResult = await callGroq(personName, messages).catch(() => ({
+            text: null,
+            reason: "groq_exception",
+        }));
+
+        let openai: OpenAIResult | null = null;
+        let aiText = groq.text;
+        let source: "groq" | "openai" | "fallback" = aiText ? "groq" : "fallback";
+
+        if (!aiText) {
+            openai = await callOpenAI(personName, messages).catch(() => ({
+                text: null,
+                reason: "openai_exception",
+            }));
+            aiText = openai.text;
+            if (aiText) source = "openai";
+        }
+
         const reply = aiText ?? localReply(personName, lastUser);
 
-        const source = aiText ? "openai" : "fallback";
-        return NextResponse.json({ reply, source }, { status: 200 });
+        const response: {
+            reply: string;
+            source: "groq" | "openai" | "fallback";
+            groqStatus?: number | null;
+            groqReason?: string | null;
+            openaiStatus?: number | null;
+            openaiReason?: string | null;
+        } = {
+            reply,
+            source,
+        };
+
+        if (!aiText) {
+            response.groqStatus = groq.status ?? null;
+            response.groqReason = groq.reason ?? null;
+            response.openaiStatus = openai?.status ?? null;
+            response.openaiReason = openai?.reason ?? null;
+        }
+
+        return NextResponse.json(response, { status: 200 });
     } catch (err) {
         console.error(err);
         return NextResponse.json({ error: "Sunucu hatası" }, { status: 500 });
